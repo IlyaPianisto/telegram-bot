@@ -109,7 +109,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_or_create_user(chat_id: srt) -> dict:
+def get_or_create_user(chat_id: str) -> dict:
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
@@ -130,3 +130,104 @@ def get_or_create_user(chat_id: srt) -> dict:
 
     conn.close()
     return dict(row)
+
+#обновление значений всех
+def update_user_settings(chat_id: str, field: str, value:str) -> None:
+    ALLOWED_FIELDS = {
+        'wind_zero',
+        'light_ref',
+        'temp_min',
+        'wind_max',
+        'light_min',
+        'humidity_max'
+    }
+    if field not in ALLOWED_FIELDS:
+        print(f"ERROR: НЕДОПУСТИМОЕ ПОЛЕ: {field}")
+        return
+
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute(f"""
+                    UPDATE users SET {field} = ? WHERE chat_id = ?""", (value, chat_id))
+
+    conn.commit()
+    conn.close()
+
+
+def get_tree_types() -> list:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT * FROM tree_types ORDER BY name"
+    )
+    rows = cursor.fetchall()
+
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def add_tree_type(name: str) -> dict | None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    try:
+        now = datetime.datetime.now().isoformat()
+        cursor.execute("""
+                       INSERT INTO tree_types (name, created_at) VALUES (?, ?) """ , (name, now))
+        conn.commit()
+
+        new_id = cursor.lastrowid
+        cursor.execute("SELECT * FROM tree_types WHERE id = ?", (new_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row)
+
+    except sqlite3.IntegrityError:
+        conn.close()
+        print(f"ERROR: дерево {name} уже есть, уже существует!")
+        return None
+
+def add_system(chat_id: str, sys_id: str, name: str = "Система") -> dict | None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    try:
+        now = datetime.datetime.now().isoformat()
+        cursor.execute("""
+                       INSERT INTO systems (chat_id, sys_id, name, created_at) VALUES (?, ?, ?, ?) """ , (chat_id, sys_id, name, now))
+        conn.commit()
+
+        new_id = cursor.lastrowid
+        cursor.execute("SELECT * FROM systems WHERE id = ?", (new_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row)
+
+    except sqlite3.IntegrityError:
+        conn.close()
+        print(f'ERROR: система {sys_id} уже добавлена для этого пользователя!')
+        return None
+
+def get_user_systems(chat_id: str) -> list:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT * FROM systems WHERE chat_id = ? ORDER BY created_at ASC""", (chat_id,))
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
