@@ -2,6 +2,7 @@ import os
 import datetime
 import sqlite3
 from dotenv import load_dotenv
+from mmsystem import SELECTDIB
 
 load_dotenv()
 
@@ -230,4 +231,151 @@ def get_user_systems(chat_id: str) -> list:
     conn.close()
 
     return [dict(row) for row in rows]
+
+def get_system(system_id: int ) -> dict | None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.rom_row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """SELECT * FROM systems WHERE id = ?
+        """ , (system_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return None
+    return dict(row)
+
+def delete_system(system_id: int, chat_id: str) -> bool:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """DELETE FROM systems WHERE id = ? and chat_id = ?""", (system_id, chat_id)
+    )
+
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+def assign_pump (system_id: int, pump_number: int, tree_type_id: int) -> dict | None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    try:
+        now = datetime.datetime.now().isoformat()
+        cursor.execute("""
+        INSERT INTO pump_assignments
+        (system_id, pump_number, tree_type_id, assigned_at) VALUES (?, ?, ?, ?)
+        ON CONFLICT (system_id, pump_number) DO UPDATE
+        SET tree_type_id = excluded.tree_type_id,
+        assigned_at = excluded.assigned_at
+                       """, (system_id, pump_number, tree_type_id, now))
+        conn.commit()
+
+        cursor.execute("""
+        SELECT
+        pa.id,
+        pa.system_id, 
+        pa.pump_number,
+        pa.assigned_at,
+        tt.name AS tree_name
+        FROM pump_assignments pa
+        JOIN tree_types tt ON tt.id = pa.tree_type_id
+        WHERE pa.tree_type_id = ? AND pa.pump_number = ?
+        """, (system_id, pump_number))
+
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row)
+
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        print(f'Ошибка привязки насоса: {e}')
+        return None
+
+def get_system_pumps(system_id: int) -> list:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("""
+                    SELECT
+                    pa.id,
+                    pa.pump_number,
+                    pa.assigned_at,
+                    tt.id AS tree_type_id,
+                    tt.name AS tree_name
+                FROM pump_assignments pa
+                JOIN tree_types tt ON tt.id = pa.tree_type_id
+                WHERE pa.system_id = ?
+                ORDER BY pa.pump_number ASC""", (system_id,)
+    )
+
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row)  for row in rows]
+
+def get_pump_assignment(system_id: int, pump_number: int) -> dict | None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("""
+                    SELECT
+                    pa.id,
+                    pa.pump_number,
+                    pa.assigned_at,
+                    tt.id AS tree_type_id,
+                    tt.name AS tree_name
+                FROM pump_assignments pa
+                JOIN tree_types tt ON tt.id = pa.tree_type_id
+                WHERE pa.tree_type_id = ? AND pa.pump_number = ?""", (system_id, pump_number))
+
+    row = cursor.fetchall()
+    conn.close()
+    if row is None:
+        return None
+    return dict(row)
+
+def remove_pump_assignment(system_id: int, pump_number: int) -> bool:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+                   DELETE FROM pump_assignments WHERE system_id = ? and pump_number = ?""", (system_id, pump_number))
+
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+def update_sensor_cash(chat_id: str, field: str, value: float) -> None:
+    ALLOWED_FIELDS = {"wind", "light", "temp", "humidity"}
+    if field not in ALLOWED_FIELDS:
+        print(f"ERROR: недопустимое поле датчика! {field}")
+        return
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    now = datetime.datetime.now().isoformat()
+
+    cursor.execute("""
+    INSERT INTO sensor_cash(chat_id, {field}, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT (chat_id) DO UPDATE
+    SET {field} = excluded.{field}, 
+    updated_at = excluded.updated_at
+    """, (chat_id, value, now))
+
+    conn.commit()
+    conn.close()
 
