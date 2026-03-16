@@ -1,6 +1,8 @@
 import os
 import datetime
 import sqlite3
+
+from Cython.Includes.cpython.datetime import total_seconds
 from dotenv import load_dotenv
 from mmsystem import SELECTDIB
 
@@ -375,6 +377,114 @@ def update_sensor_cash(chat_id: str, field: str, value: float) -> None:
     SET {field} = excluded.{field}, 
     updated_at = excluded.updated_at
     """, (chat_id, value, now))
+
+    conn.commit()
+    conn.close()
+
+def get_sensor_cash(chat_id: str) -> dict:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM sensor_cash WHERE chat_id = ?", (chat_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None:
+        return {}
+    result = dict(row)
+
+    try:
+        updated = datetime.datetime.now().isoformat(result['updated_at'])
+        age_seconds = (datetime.datetime.now() - updated).total_seconds()
+        result['age_minutes'] = round(age_seconds / 60, 1)
+    except Exception:
+        result['age_minutes'] = None
+
+    return result
+
+#def get_sensor_cash_with_calibration(chat_id: str) -> dict:
+    cash = get_sensor_cash(chat_id)
+    if not cash:
+        return {}
+
+    user = get_or_create_user(chat_id)
+
+    if cash.get('wind') is not None:
+        wind_zero =  user.get('wind_zero', 0.0)
+        cash['wind'] = round(cash['wind'] - wind_zero, 2)
+
+    return cash
+def clear_sensor_cash(chat_id: str) -> None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM sensor_cash WHERE chat_id = ?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+def add_schedule_task(chat_id: str, system_id:int, pump_assignment_id: int, month_name: str, stage_name: str, scheduled_time = '22:00') -> dict | None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    try:
+        now = datetime.datetime.now().isoformat()
+        cursor.execute("""
+                        INSERT INTO scheduled_tasks (chat_id. system_id, pump_assignment_id. month_name, stage_name, scheduled_time, created_at)  VALUES (?, ?, ?, ?, ?, ?, ?)""", (chat_id, system_id, pump_assignment_id, month_name, stage_name, scheduled_time, now))
+        conn.commit()
+
+        new_id = cursor.lastrowid
+        cursor.execute("SELECT * FROM scheduled_tasks WHERE id = ?", (new_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row)
+
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        print(f'Error! Ошибка создания задачи: {e}')
+        return None
+
+def get_pending_tasks() -> list:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    current_time = datetime.datetime.now().strftime("%H:%M")
+
+    cursor.execute("""
+                    SELECT
+                    st.*,
+                    s.sys_id,
+                    s.name AS system_name,
+                    pa.pump_number,
+                    tt.name AS tree_name
+                    FROM scheduled_tasks st
+                    JOIN systems s ON s.id = st.system_id
+                    JOIN pump_assignments pa ON pa.id = st.tree_type_id
+                    JOIN tree_types tt ON tt.id = pa.tree_type_id
+                    WHERE st.status = 'pending' AND st.scheduled_time <= ? ORDER BY st.created_at ASC """, (current_time,))
+
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def update_task_status(task_id: str, new_status: str) -> None:
+    ALLOWED_STATUSES = {'pending', 'checking', 'running', 'done', 'skipped', 'cancelled'}
+    if new_status not in ALLOWED_STATUSES:
+        print(f"ERROR! Недопустимый статус!! '{new_status}'")
+        return
+
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+                    UPDATE scheduled_tasks SET status = ? WHERE id = ?""", (new_status, task_id))
 
     conn.commit()
     conn.close()
