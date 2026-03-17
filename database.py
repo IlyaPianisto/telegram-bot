@@ -1,10 +1,7 @@
 import os
 import datetime
 import sqlite3
-
-from Cython.Includes.cpython.datetime import total_seconds
 from dotenv import load_dotenv
-from mmsystem import SELECTDIB
 
 load_dotenv()
 
@@ -371,7 +368,7 @@ def update_sensor_cash(chat_id: str, field: str, value: float) -> None:
 
     now = datetime.datetime.now().isoformat()
 
-    cursor.execute("""
+    cursor.execute(f"""
     INSERT INTO sensor_cash(chat_id, {field}, updated_at) VALUES (?, ?, ?)
     ON CONFLICT (chat_id) DO UPDATE
     SET {field} = excluded.{field}, 
@@ -416,6 +413,7 @@ def get_sensor_cash(chat_id: str) -> dict:
         cash['wind'] = round(cash['wind'] - wind_zero, 2)
 
     return cash
+
 def clear_sensor_cash(chat_id: str) -> None:
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -434,7 +432,7 @@ def add_schedule_task(chat_id: str, system_id:int, pump_assignment_id: int, mont
     try:
         now = datetime.datetime.now().isoformat()
         cursor.execute("""
-                        INSERT INTO scheduled_tasks (chat_id. system_id, pump_assignment_id. month_name, stage_name, scheduled_time, created_at)  VALUES (?, ?, ?, ?, ?, ?, ?)""", (chat_id, system_id, pump_assignment_id, month_name, stage_name, scheduled_time, now))
+                        INSERT INTO scheduled_tasks (chat_id, system_id, pump_assignment_id, month_name, stage_name, scheduled_time, created_at)  VALUES (?, ?, ?, ?, ?, ?, ?)""", (chat_id, system_id, pump_assignment_id, month_name, stage_name, scheduled_time, now))
         conn.commit()
 
         new_id = cursor.lastrowid
@@ -488,4 +486,128 @@ def update_task_status(task_id: str, new_status: str) -> None:
 
     conn.commit()
     conn.close()
+
+def cancel_pending_tasks(chat_id: str, system_id: int, stage_name: str) -> int:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+                   UPDATE scheduled_tasks SET status = 'cancelled' WHERE chat_id = ? and system_id = ? and stage_name = ? and status = 'pending'""", (chat_id, system_id, stage_name))
+
+    cancelled_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return cancelled_count
+
+def get_user_tasks (chat_id: str, status: str = None) -> list:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    if status:
+        cursor.execute("""
+                        SELECT
+                        st.*
+                        s.sys_id,
+                        s.name AS system_name,
+                        pa.pump_number,
+                        tt.name AS tree_name
+                        FROM scheduled_tasks st
+                       JOIN systems s ON s.id = st.system_id
+                       JOIN pump_assignments pa ON pa.id = st.pump_assignment_id
+                       JOIN tree_types tt ON tt.id = pa.tree_type_id
+                       WHERE st.chat_id = ?
+                       AND st.status = ? ORDER BY st.created_at DESC """, (chat_id, status))
+        
+    else:
+        cursor.execute("""
+                       SELECT
+                       st.*,
+                       s.sys_id,
+                       s.name AS system_name,
+                       pa.pump_number,
+                       tt.name AS tree_name
+                       FROM scheduled_tasks st
+                        JOIN systems s ON s.id = st.system_id
+                        JOIN pump_assignments pa ON pa.id = st.pump_assignment_id
+                        JOIN tree_types tt ON tt.id = pa.tree_type_id
+                        WHERE st.chat_id = ?
+                        ORDER BY st.created_at DESC """, (chat_id,))
+    
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def log_treatment(chat_id: str, system_id: int, pump_assignment_id: int, month_name: str, stage_name: str, result: str, sensor_snapshot: str = None) -> dict | None:
+    ALLOWED_RESULTS = {"success", "skipped", "failed"}
+    if result not in ALLOWED_RESULTS:
+        print(f"ERROR! Недопустимый результат!! '{result}'")
+        return None
+    
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    try: 
+        now = datetime.datetime.now().isoformat()
+        cursor.execute("""
+                       INSERT INTO treatment_log (chat_id, system_id, pump_assignment_id, month_name, stage_name, result, sensor_snapshot, completed_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""", (chat_id, system_id, pump_assignment_id, month_name, stage_name, result, sensor_snapshot, now))
+        conn.commit()
+        
+        new_id = cursor.lastrowid
+        cursor.execute("SELECT * FROM treatment_log WHERE id = ?", (new_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row)
+    
+    except sqlite3.IntegrityError as e:
+        conn.close()
+        print(f"ERROR! Ошибка записи в лог: {e}")
+        return None
+    
+def get_last_treatment_date(chat_id: str, stage_name: str) -> datetime.datetime | None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+                   SELECT MAX (completed_at) FROM treatment_log WHERE chat_id = ? and stage_name = ? and status = 'success'""", (chat_id, stage_name))
+
+    row = cursor.fetchone()
+    conn.close()
+
+    if row is None or row[0] is None:
+        return None
+
+    return datetime.datetime.fromisoformat(row[0])
+
+def get_treatment_history(chat_id: str, limit: int = 10 ) -> list:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("""
+                   SELECT 
+                   tl.*
+                   s.sys_id,
+                   s.name AS system_name,
+                   pa.pump_number,
+                   tt.name AS tree_name
+                   FROM treatment_log tl
+                   JOIN systems s ON s.id = tl.system_id
+                   JOIN pump_assignments pa ON pa.id = tl.pump_assignment_id
+                   JOIN tree_types tt ON tt.id = pa.tree_type_id
+                   WHERE tl.chat_id = ?
+                   ORDER BY tl.completed DESC 
+                   LIMIT = ?""", (chat_id, limit))
+
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
