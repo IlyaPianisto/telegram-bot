@@ -155,17 +155,18 @@ def on_message(client, userdata, msg):
 
 def get_main_menu():
     kb = [
-        [InlineKeyboardButton("🌳 Обработка деревьев (Авто)", callback_data="menu:treatment_auto")],
-        [InlineKeyboardButton("⚙️ Настройки", callback_data="menu:settings")]
+        [InlineKeyboardButton("Обработка деревьев", callback_data="menu:treatment_auto")],
+        [InlineKeyboardButton("Настройки", callback_data="menu:settings")]
     ]
     return InlineKeyboardMarkup(kb)
 
 def get_settings_menu():
     kb = [
-        [InlineKeyboardButton("🐞 Отладка", callback_data="menu:debug")],
-        [InlineKeyboardButton("📝 Конфигурация деревьев", callback_data="menu:config_trees")],
-        [InlineKeyboardButton("🔗 Привязать/Отвязать", callback_data="menu:binding")],
-        [InlineKeyboardButton("🔙 В главное меню", callback_data="menu:main")]
+        [InlineKeyboardButton("Привязать/Отвязать систему", callback_data="menu:sys_setup")],
+        [InlineKeyboardButton("Калибровка", callback_data="menu:calibration")],
+        [InlineKeyboardButton("Отладка", callback_data="menu:debug")],
+        [InlineKeyboardButton("Конфигурация деревьев", callback_data="menu:tree_type_config")],
+        [InlineKeyboardButton("<- Назад", callback_data="menu:main")]
     ]
     return InlineKeyboardMarkup(kb)
 
