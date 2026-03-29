@@ -47,8 +47,6 @@ def init_db():
                         )
                         """)
 
-
-
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS tree_types (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,

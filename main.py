@@ -68,7 +68,7 @@ def init_user (chat_id) -> str:
     return str_id
 
 def get_active_system(str_id: str) -> dict | None:
-    system_id = user_states[str_id].get(['active_system_id'])
+    system_id = user_states[str_id].get('active_system_id')
     if system_id is None:
         return None
 
@@ -204,29 +204,31 @@ def kb_add_new_system(slot: int, page: int) -> InlineKeyboardMarkup:
 
 # Калибровка
 
-def kb_calibration_menu() -> InlineKeyboardMarkup:
+def kb_calibration_menu(str_id: str) -> InlineKeyboardMarkup:
+    user = db.get_or_create_user(str_id)
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Размер ёмкостей...", callback_data="clib:bottle")],
-        [InlineKeyboardButton("Время опрыскивания: Текущее значение", callback_data="calib:field:pump_flow_rate")],
-        [InlineKeyboardButton("Освещённость (Ночь): Текущее значение", callback_data="calib:field:light_night")],
-        [InlineKeyboardButton("Максимальная скорость ветра: Текущее значение", callback_data="calib:field:wind_max")],
-        [InlineKeyboardButton("Максимальная влажность: Текущее значение", callback_data="calib:field:humidity_max")],
+        [InlineKeyboardButton(f"Время опрыскивания (c): {user['pump_flow_rate']}", callback_data="calib:field:pump_flow_rate")],
+        [InlineKeyboardButton(f"Освещённость (Ночь): {user['light_night']}", callback_data="calib:field:light_night")],
+        [InlineKeyboardButton(f"Максимальная скорость ветра (м/с): {user['wind_max']}", callback_data="calib:field:wind_max")],
+        [InlineKeyboardButton(f"Максимальная влажность: {user['humidity_max']}", callback_data="calib:field:humidity_max")],
         [InlineKeyboardButton("<- Назад", callback_data="menu:system_menu")],
 ])
 
-def kb_chose_pump ():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Насос 1", callback_data="")],
-        [InlineKeyboardButton("Насос 2", callback_data="")],
-        [InlineKeyboardButton("Насос 3", callback_data="")],
-        [InlineKeyboardButton("Насос 4", callback_data="")],
-        [InlineKeyboardButton("Насос 5", callback_data="")],
-        [InlineKeyboardButton("Насос 6", callback_data="")],
-        [InlineKeyboardButton("Насос 7", callback_data="")],
-        [InlineKeyboardButton("Насос 8", callback_data="")],
-        [InlineKeyboardButton("<- Назад", callback_data="")],
+def kb_chose_pump (system_id:int, purpose: str, page: int) -> InlineKeyboardMarkup:
+    rows = []
+    row = []
+    for i in range(1, 9):
+        rows.append([InlineKeyboardButton(f"Насос {i}", callback_data=f"pump:{purpose}:{system_id}:{i}")])
+        if len(row) == 2:
+            row.append(row)
+            row = []
 
-    ])
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("<- Назад", callback_data=f"sys:select:{system_id}:{page}")])
+
+    return InlineKeyboardMarkup(rows)
 
 def kb_calib_value(field: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -298,7 +300,38 @@ def kb_choose_system_for(str_id: str, purpose:str, page: int = 0) -> InlineKeybo
     rows.append([InlineKeyboardButton("<- Назад", callback_data=back_map.get(purpose, 'menu:main'))])
     return InlineKeyboardMarkup(rows)
 
-async def start(update: Update):
+def delete_confirm (system_id: int, page: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Удалить", callback_data=f"sys:delete:{system_id}:{page}")],
+        [InlineKeyboardButton( "<- Назад", callback_data=f"sys:select:{system_id}:{page}")],
+    ])
+
+def kb_choose_tree_type(system_id: int, pump_num: int,page: int) -> InlineKeyboardMarkup:
+    tree_types = db.get_tree_types()
+    start = page + TREES_PER_PAGE
+    end = page + TREES_PER_PAGE
+    page_trees = tree_types[start:end]
+
+    rows = []
+
+    for t in page_trees:
+        rows.append([InlineKeyboardButton(
+            t['name'], callback_data=f"tree_config:assign:{system_id}:{pump_num}:{t['id']}"
+        )])
+
+    nav = []
+
+    if page > 0:
+        nav.append(InlineKeyboardButton("<<", callback_data=f"tree_config:tree_page:{system_id}:{pump_num}:{page - 1}"))
+    if end < len(tree_types):
+        nav.append(InlineKeyboardButton(">>", callback_data=f"tree_config:tree_page:{system_id}:{pump_num}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("<- Назад", callback_data=f"tree_config:back_pumps:{system_id}:{page}")])
+
+
+async def cmd_start(update: Update):
     init_user(update.effective_chat.id)
     await update.message.reply_text("Система управления садом.", reply_markup=kb_main_menu())
 
@@ -308,13 +341,31 @@ async def text_input_handler(update: Update):
         text = update.message.text.strip()
         waiting = state.get('awaiting_input')
 
-        if waiting == "sys_name":
+        if waiting == "sys_rename":
             pending = state.get("pending_sys", {})
-            sys_id_num = pending.get("sys_id")
-            result = db.add_system(str_id, sys_id_num, name=text)
+            system_id = pending.get("system_id")
+            page = pending.get("page", 0)
             state['awaiting_input'] = None
             state['pending_sys'] = None
 
-            if result:
-                state['active_system_id'] = result["id"]
-                await update.message.reply_text(f"Система '{text}' добавлена и выбрана как активная")
+            if system_id:
+                db.rename_system(system_id, str_id, page)
+                await update.message.reply_text(f"Система переименована в: '{text}'", reply_markup=kb_chosen_system(system_id, page))
+
+            else:
+                await update.message.reply_text("ERROR!", reply_markup=kb_chosen_system(system_id, page))
+
+        elif waiting == "sys:add_name":
+            pending = state.get("pending_sys", {})
+            system_id = pending.get("system_id")
+            slot = pending.get("slot")
+            page = pending.get("page", 0)
+            state['pending_sys'] = None
+            state['awaiting_input'] = None
+
+            if slot is not None:
+                result = db.add_system(str_id, slot, name=text)
+                if result:
+                    await update.message.reply_text(f"Система №{slot} '{text} добавлена!", reply_markup=kb_system_menu(str_id, page))
+
+
