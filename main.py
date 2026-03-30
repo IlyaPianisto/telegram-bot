@@ -22,6 +22,7 @@ TREATMENTS_FILE = "treatments.json"
 
 TREES_PER_PAGE = 5
 SYSTEMS_PER_PAGE = 5
+TREATMENTS_PER_PAGE = 5
 
 # Логирование
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -41,13 +42,15 @@ def load_treatments() -> dict:
         logger.error(f"ERROR!! Ошибка загрузки {TREATMENTS_FILE}: {e}")
         return {}
 
-treatments = load_treatments()
+treatments_db = load_treatments()
 
 # Маппинг месяцев
 MONTHS_RU = {
     1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель", 5: "Май", 6: "Июнь",
     7: "Июль", 8: "Август", 9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
 }
+
+MONTHS_LIST = ["Январь", "Февраль", "март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
 
 user_states: dict = {}
 
@@ -219,9 +222,9 @@ def kb_chose_pump (system_id:int, purpose: str, page: int) -> InlineKeyboardMark
     rows = []
     row = []
     for i in range(1, 9):
-        rows.append([InlineKeyboardButton(f"Насос {i}", callback_data=f"pump:{purpose}:{system_id}:{i}")])
+        rows.append([InlineKeyboardButton(f"Насос {i}", callback_data=f"{purpose}:pump:{system_id}:{i}")])
         if len(row) == 2:
-            row.append(row)
+            rows.append(row)
             row = []
 
     if row:
@@ -330,6 +333,69 @@ def kb_choose_tree_type(system_id: int, pump_num: int,page: int) -> InlineKeyboa
 
     rows.append([InlineKeyboardButton("<- Назад", callback_data=f"tree_config:back_pumps:{system_id}:{page}")])
 
+    return InlineKeyboardMarkup(rows)
+
+def kb_treatment_menu () -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Запланировать", callback_data="treat:plan:0")],
+        [InlineKeyboardButton("Отложенные", callback_data="treat:list:pending")],
+        [InlineKeyboardButton("В процессе", callback_data="treat:list:running")],
+        [InlineKeyboardButton("<- Назад", callback_data="menu:main")],
+    ])
+
+def kb_task_list(tasks: list, status: str) -> InlineKeyboardMarkup:
+    rows = []
+
+    for task in tasks:
+        label = f"" ### peredelat
+        rows.append([InlineKeyboardButton(label, callback_data=f"treat:task:{task['id']}:{status}")])
+    rows.append([InlineKeyboardButton("<- Назад", callback_data="menu:treatment")])
+    return InlineKeyboardMarkup(rows)
+
+def kb_task_selected(task_id: int, status: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Отменить", callback_data=f"treat:cancel_confirm:{task_id}:{status}")],
+        [InlineKeyboardButton("<- Назад", callback_data=f"treat:list:{status}")],
+    ])
+
+def kb_task_cancel_confirm(task_id: int, status: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Да", callback_data=f"treat:cancel:{task_id}:{status}")],
+        [InlineKeyboardButton("<- Назад", callback_data=f"treat:task:{task_id}:{status}")],
+    ])
+
+def kb_plan_stage(month_id : int, page: int) -> InlineKeyboardMarkup:
+    month_name = MONTHS_LIST[month_id]
+    stages = treatments_db.get(month_id, {}).get('stages', [])
+    start = page * TREES_PER_PAGE
+    end = start + TREES_PER_PAGE
+    page_stages = stages[start:end]
+
+    rows = []
+    for i, stage in enumerate(page_stages):
+        rows.append([InlineKeyboardButton(stage['name'], callback_data=f"treat:stage:{month_id}:{start+i}")]) #peredelat
+
+    nav = []
+
+    if page > 0:
+        nav.append(InlineKeyboardButton("<<", callback_data=f"treat:plan:{month_id}:{page - 1}"))
+    if end < 11:
+        nav.append(InlineKeyboardButton(">>", callback_data=f"treat:plan:{month_id}:{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    month_nav = []
+
+    if month_id > 0:
+        month_nav.append(InlineKeyboardButton("Пред. месяц", callback_data=f"treat:plan:{month_id - 1}"))
+    if month_id < 11:
+        month_nav.append(InlineKeyboardButton("След. месяц", callback_data=f"treat:plan:{month_id + 1}"))
+    if month_nav:
+        rows.append(month_nav)
+
+    rows.append([InlineKeyboardButton("<- Назад", callback_data=f"menu:treatment")])
+
+    return InlineKeyboardMarkup(rows)
 
 async def cmd_start(update: Update):
     init_user(update.effective_chat.id)
@@ -357,7 +423,6 @@ async def text_input_handler(update: Update):
 
         elif waiting == "sys:add_name":
             pending = state.get("pending_sys", {})
-            system_id = pending.get("system_id")
             slot = pending.get("slot")
             page = pending.get("page", 0)
             state['pending_sys'] = None
@@ -367,5 +432,27 @@ async def text_input_handler(update: Update):
                 result = db.add_system(str_id, slot, name=text)
                 if result:
                     await update.message.reply_text(f"Система №{slot} '{text} добавлена!", reply_markup=kb_system_menu(str_id, page))
+                else:
+                    await update.message.reply_text("Система с таким номером уже существует!", reply_markup=kb_system_menu(str_id, page))
+            else:
+                await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
 
+        elif waiting == "calib:manual":
+            pending = state.get("pending_calib", {})
+            field = pending.get("field")
 
+            if field:
+                try:
+                    vol = float(text.replace(",", "."))
+                    if vol <= 0:
+                        raise ValueError
+                    db.update_user_settings(str_id, field, vol)
+                    state['awaiting_input'] = None
+                    state['pending_calib'] = None
+                    await update.message.reply_text("Изменения внесены!", reply_markup=kb_calibration_menu)
+
+                except ValueError:
+                    await update.message.reply_text("Введите положительное число!", reply_markup=kb_calibration_menu)
+
+            else:
+                await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
