@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 import paho.mqtt.client as mqtt
 from typer.cli import callback
@@ -303,7 +304,7 @@ def kb_choose_system_for(str_id: str, purpose:str, page: int = 0) -> InlineKeybo
     rows.append([InlineKeyboardButton("<- Назад", callback_data=back_map.get(purpose, 'menu:main'))])
     return InlineKeyboardMarkup(rows)
 
-def delete_confirm (system_id: int, page: int) -> InlineKeyboardMarkup:
+def kb_delete_confirm (system_id: int, page: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Удалить", callback_data=f"sys:delete:{system_id}:{page}")],
         [InlineKeyboardButton( "<- Назад", callback_data=f"sys:select:{system_id}:{page}")],
@@ -402,57 +403,261 @@ async def cmd_start(update: Update):
     await update.message.reply_text("Система управления садом.", reply_markup=kb_main_menu())
 
 async def text_input_handler(update: Update):
-        str_id = str(update.effective_chat.id)
-        state = user_states[str_id]
-        text = update.message.text.strip()
-        waiting = state.get('awaiting_input')
+    str_id = str(update.effective_chat.id)
+    state = user_states[str_id]
+    text = update.message.text.strip()
+    waiting = state.get('awaiting_input')
 
-        if waiting == "sys_rename":
-            pending = state.get("pending_sys", {})
-            system_id = pending.get("system_id")
-            page = pending.get("page", 0)
+    if waiting == "sys_rename":
+        pending = state.get("pending_sys", {})
+        system_id = pending.get("system_id")
+        page = pending.get("page", 0)
+        state['awaiting_input'] = None
+        state['pending_sys'] = None
+        if system_id:
+            db.rename_system(system_id, str_id, page)
+            await update.message.reply_text(f"Система переименована в: '{text}'", reply_markup=kb_chosen_system(system_id, page))
+        else:
+            await update.message.reply_text("ERROR!", reply_markup=kb_chosen_system(system_id, page))
+    elif waiting == "sys:add_name":
+        pending = state.get("pending_sys", {})
+        slot = pending.get("slot")
+        page = pending.get("page", 0)
+        state['pending_sys'] = None
+        state['awaiting_input'] = None
+        if slot is not None:
+            result = db.add_system(str_id, slot, name=text)
+            if result:
+                await update.message.reply_text(f"Система №{slot} '{text} добавлена!", reply_markup=kb_system_menu(str_id, page))
+            else:
+                await update.message.reply_text("Система с таким номером уже существует!", reply_markup=kb_system_menu(str_id, page))
+        else:
+            await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
+    elif waiting == "calib:manual":
+        pending = state.get("pending_calib", {})
+        field = pending.get("field")
+        if field:
+            try:
+                vol = float(text.replace(",", "."))
+                if vol <= 0:
+                    raise ValueError
+                db.update_user_settings(str_id, field, vol)
+                state['awaiting_input'] = None
+                state['pending_calib'] = None
+                await update.message.reply_text("Изменения внесены!", reply_markup=kb_calibration_menu)
+            except ValueError:
+                await update.message.reply_text("Введите положительное число!", reply_markup=kb_calibration_menu)
+        else:
+            await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
+
+    elif waiting == "calib:bootle":
+        try:
+            val = float(text)
+            if val <= 0:
+                raise ValueError
+            db.update_user_settings(str_id, "bootle_volume_l", val)
             state['awaiting_input'] = None
-            state['pending_sys'] = None
+            await update.message.reply_text(f"Объём ёмкости сохранён! {val} Л.", reply_markup=kb_calibration_menu)
 
-            if system_id:
-                db.rename_system(system_id, str_id, page)
-                await update.message.reply_text(f"Система переименована в: '{text}'", reply_markup=kb_chosen_system(system_id, page))
+        except ValueError:
+            await update.message.reply_text("ERROR! Введите положительное число (л):")
 
-            else:
-                await update.message.reply_text("ERROR!", reply_markup=kb_chosen_system(system_id, page))
+    else:
+        await update.message.reply_text("Используйте кнопки меню!", reply_markup=kb_main_menu())
 
-        elif waiting == "sys:add_name":
-            pending = state.get("pending_sys", {})
-            slot = pending.get("slot")
-            page = pending.get("page", 0)
-            state['pending_sys'] = None
-            state['awaiting_input'] = None
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-            if slot is not None:
-                result = db.add_system(str_id, slot, name=text)
-                if result:
-                    await update.message.reply_text(f"Система №{slot} '{text} добавлена!", reply_markup=kb_system_menu(str_id, page))
-                else:
-                    await update.message.reply_text("Система с таким номером уже существует!", reply_markup=kb_system_menu(str_id, page))
-            else:
-                await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
+    data = query.data
+    str_id = init_user(update.effective_chat.id)
+    state = user_states[str_id]
 
-        elif waiting == "calib:manual":
-            pending = state.get("pending_calib", {})
-            field = pending.get("field")
+    if data == 'main:menu':
+        await query.edit_message_text("Главное меню:", reply_markup=kb_main_menu())
 
-            if field:
-                try:
-                    vol = float(text.replace(",", "."))
-                    if vol <= 0:
-                        raise ValueError
-                    db.update_user_settings(str_id, field, vol)
-                    state['awaiting_input'] = None
-                    state['pending_calib'] = None
-                    await update.message.reply_text("Изменения внесены!", reply_markup=kb_calibration_menu)
+    elif data == "menu:settings":
+        await query.edit_message_text("Настройки", reply_markup=kb_settings_menu())
 
-                except ValueError:
-                    await update.message.reply_text("Введите положительное число!", reply_markup=kb_calibration_menu)
+    elif data == "menu:system_menu":
+        await query.edit_message_text("Управление системами. Выберите систему!", reply_markup=kb_system_menu(str_id, 0))
 
-            else:
-                await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
+    elif data.startswith("sys:page"):
+        page = int(data.split(":")[2])
+        await query.edit_message_reply_markup(reply_markup=kb_system_menu(str_id, page))
+
+    elif data.startswith("sys:select:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        page = int(parts[3])
+        system = db.get_system(system_id)
+        await query.edit_message_reply_markup(f"Выбрана система №{system['sys_id']}  \"{system['name']}\"", reply_markup=kb_system_menu(str_id, page))
+
+    elif data.startswith("sys:rename:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        page = int(parts[3])
+        state['awaiting_input'] = 'sys:rename'
+        state['pending_sys'] = {'system_id': system_id, 'page': page}
+        await query.edit_message_reply_markup("Введите новое название системы:" ,reply_markup=kb_system_menu(str_id, page))
+
+    elif data.startswith("sys:delete_confirm:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        page = int(parts[3])
+        system = db.get_system(system_id)
+        await query.edit_message_text(f"Удалить систему №{system['sys_id']} \"{system['name']}\"", reply_markup=kb_delete_confirm(system_id, page))
+
+    elif data.startswith("sys:delete:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        page = int(parts[3])
+        db.delete_system(system_id, str)
+        await query.edit_message_text("Система удалена", reply_markup=kb_system_menu(str_id, page))
+
+    elif data.startswith("sys:empty:"):
+        parts = data.split(":")
+        slot = int(parts[2])
+        page = int(parts[3])
+        await query.edit_message_text(f"Выбран слот №{slot} \n Слот свободен.", reply_markup=kb_chosen_system(slot, page))
+
+    elif data.startswith("sys:add:"):
+        parts = data.split(":")
+        slot = int(parts[2])
+        page = int(parts[3])
+        await query.edit_message_text(
+            f"<b>Добавление системы №{slot}</b>\n\n"
+            f"Вставьте ваш Telegram id и номер системы в настройках WiFi:\n\n"
+            f"Ваш Telegram id: <code>{str_id}</code>\n"
+            f"Номер системы: <code>{slot}</code>\n\n"
+            f"После настройки устройства нажмите \"Далее\".",
+            parse_mode="HTML",
+            reply_markup=kb_add_new_system(slot, page))
+
+    elif data.startswith("sys:add_name:"):
+        parts = data.split(":")
+        slot = int(parts[2])
+        page = int(parts[3])
+        state['awaiting_input'] = 'sys:add_name'
+        state['pending_sys'] = {'slot': slot, 'page': page}
+        await query.edit_message_reply_markup("Напишите название для вашей системы:")
+
+    elif data == "menu:treatment":
+        await query.edit_message_text("Обработка деревьев", reply_markup=kb_treatment_menu())
+
+    elif data.startswith("treat:list:"):
+        status = data.split(":")[2]
+        tasks = db.get_user_tasks(str_id, status=status)
+
+        label_map = {"pending": "Отложенные", "running": "В процессе"}
+        if not tasks:
+            await query.edit_message_text(
+                f"{label_map(status)}\nОбработок нет.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("<- Назад", reply_markup="menu:treatment")]]))
+            return
+        await query.edit_message_text(f"{label_map[status]}\nОбработки", reply_markup=kb_task_list(tasks, status))
+
+    elif data.startswith("treat:task:"):
+        parts = data.split(":")
+        task_id = int(parts[2])
+        status = parts[3]
+        tasks = db.get_user_tasks(str_id, status=status)
+        task = next((t for t in tasks if t['id'] == task_id), None)
+        if not task:
+            await query.edit_message_text("Задача не найдена", reply_markup=kb_treatment_menu())
+            return
+        await query.edit_message_text(
+            f"{task['tree_name']}\n"
+            f"Этап: {task['stage_name']}\n"
+            f"Система: {task['system_name']}\n"
+            f"Насос: {task['pump_number']}\n"
+            f"Время: {task['scheduled_time']}"
+            f"Статус: {task['status']}",
+            reply_markup=kb_task_selected(task_id, status)
+        )
+
+    elif data.startswith("treat:cancel_confirm:"):
+        parts = data.split(":")
+        task_id = int(parts[3])
+        status = parts[4]
+        await query.edit_message_text('Вы уверены, что хотите отменить обработку?', reply_markup=kb_task_cancel_confirm(task_id, status))
+
+    elif data.startswith("treat:cancel:"):
+        parts = data.split(":")
+        task_id = int(parts[2])
+        status = parts[3]
+        db.update_task_status(task_id, 'cancelled')
+        tasks = db.get_user_tasks(str_id, status=status)
+        label_map = {'pending': "Отложенные", 'running': "В процессе"}
+        if not tasks:
+            await query.edit_message_text(f"Обработка отменена\n{label_map[status]}\nОбработок нет", reply_markup=InlineKeyboardMarkup([InlineKeyboardButton("<- Назад", callback_data="menu:treatment")]))
+            return
+        await query.edit_message_text(f"Обработка отменена. \n\n{label_map[status]}\nОбработки:", reply_markup=kb_task_list(tasks, status))
+
+    elif data.startswith("treat:plan:"):
+        month_id = int(data.split(":")[2])
+        month_name = MONTHS_LIST[month_id]
+        stages = treatments_db.get(month_name,{}).get('stages', [])
+        await query.edit_message_text(
+            f"Месяц: {month_name}\n"
+            f"Доступные обработки: {len(stages)}", reply_markup=kb_plan_stage(month_id, 0)
+        )
+
+    elif data.startswith("treat:plan_page:"):
+        parts = data.split(":")
+        month_id = int(data.split(":")[2])
+        page = int(parts[3])
+        await query.edit_message_reply_markup(reply_markup=kb_plan_stage(month_id, page))
+
+    elif data.startswith("treat:stage:"): # его если чё менять потом.
+        parts = data.split(":")
+        month_id = int(parts[2])
+        stage_id = int(parts[3])
+        month_name = MONTHS_LIST[month_id]
+        stages = treatments_db.get(month_name,{}).get('stages', [])
+        if stage_id >= len(stages):
+            await query.edit_message_text("Обработка не найдена.", reply_markup=kb_treatment_menu())
+            return
+
+        stage = stages[stage_id]
+        text = f"{month_name}:{stage['name']}\n"
+        if stage.get("condition"):
+            text += f"{stage['condition']}"
+
+        for tree_name, info in stage.get('trees', {}).items():
+            text += f"{tree_name}:{info.get('mixture', '-')}\n"
+        if stage.get("temperature") is not None:
+            text += f"{stage['temperature']}"
+
+        state['pending_treatments'] = {
+            "month_name": month_name,
+            "month_id": month_id,
+            "stage_id": stage_id,
+        }
+
+        rows = [
+            [InlineKeyboardButton("Готово!", callback_data=f"treat:confirm:{month_id}:{stage_id}")],
+            [InlineKeyboardButton("<- Назад", callback_data=f"treat:plan:{month_id}")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
+
+    elif data.startswith("treat:confirm:"):
+        parts = data.split(":")
+        month_id = int(parts[2])
+        stage_id = int(parts[3])
+        month_name = MONTHS_LIST[month_id]
+        stage = treatments_db.get(month_name,{}).get('stages', [])[stage_id]
+        trees_text = ','.join(stage.get("trees", {}).keys()) or "-"
+
+        await query.edit_message_text(
+            f"Подтверждение \n\n"
+            f"Месяц: {month_name}\n"
+            f"Этап: {stage['name']}\n"
+            f"Деревья: {trees_text}\n\n"
+            "Приготовьте раствор и залейте в ёмкости. Затем выберите системы для обработки",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Выбрать систему", callback_data="treat:chose_system")],
+                [InlineKeyboardButton("<- Назад", callback_data=f"treat:stage:{month_id}:{stage_id}")],
+            ])
+        )
+
+    elif data == "treat:chose_system":
