@@ -9,7 +9,6 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
 import paho.mqtt.client as mqtt
 from typer.cli import callback
-
 import database as db
 
 # Настройки
@@ -398,9 +397,11 @@ def kb_plan_stage(month_id : int, page: int) -> InlineKeyboardMarkup:
 
     return InlineKeyboardMarkup(rows)
 
+
 async def cmd_start(update: Update):
     init_user(update.effective_chat.id)
     await update.message.reply_text("Система управления садом.", reply_markup=kb_main_menu())
+
 
 async def text_input_handler(update: Update):
     str_id = str(update.effective_chat.id)
@@ -464,6 +465,7 @@ async def text_input_handler(update: Update):
 
     else:
         await update.message.reply_text("Используйте кнопки меню!", reply_markup=kb_main_menu())
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -661,3 +663,130 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "treat:chose_system":
+        systems = db.get_user_systems(str_id)
+        if not systems:
+            await query.edit_message_text('Нет привязанных систем', reply_markup=kb_treatment_menu())
+            return
+        await query.edit_message_text("Выберите систему:", reply_markup=kb_choose_system_for(str_id, "treatment", 0))
+
+    elif data.startswith("menu_treatment"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        system = db.get_system(system_id)
+
+        if state.get('pending_treatment') is None:
+            state['pending_treatment'] = {}
+        state['pending_treatment']["system_id"] = system_id
+
+        pumps = db.get_system_pumps(system_id)
+
+        if not pumps:
+            await query.edit_message_text(f"В системе \"{system['name']}\" нет привязанных насосов!", reply_markup=kb_treatment_menu())
+            return
+
+        rows = []
+        for pump in pumps:
+            rows.append([InlineKeyboardButton(f"{pump['pump_number']}. {pump['tree_name']}", callback_data=f"treat:pump:{system_id}:{pump['id']}")])
+
+        rows.append([InlineKeyboardButton("<- Назад", callback_data=f"treat:chose_system")])
+        await query.edit_message_text(f"Система \"{system['name']}\"\nВыберите насос:", reply_markup=InlineKeyboardMarkup(rows))
+
+    elif data.startswith("treat:pump"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        pump_assignment_id = int(parts[3])
+        pending = state.get('pending_treatment', {})
+        month_name = pending.get('month_name')
+        stage_id = pending.get('stage_id', 0)
+
+        if not month_name:
+            await query.edit_message_text("ERROR! Начините выбор заново.", reply_markup=kb_treatment_menu())
+            return
+
+        stage = treatments_db.get(month_name,{}).get('stages', [])[stage_id]
+        stage_name = stage['name']
+        pumps = db.get_system_pumps(system_id)
+        pump = next((p for p in pumps if p['id'] == pump_assignment_id), None)
+
+        db.add_schedule_task(
+            str_id,
+            system_id,
+            pump_assignment_id,
+            month_name,
+            stage_name,
+            "22:00"
+        )
+
+        state['pending_treatment'] = None
+        tree_name = pump['tree_name'] if pump else '-'
+        pump_num = pump['pump_number'] if pump else '-'
+
+        await query.edit_message_text(
+            f"Обработка запланирована на 22:00\nНасос {pump_num} - {tree_name}\nЭтап: {stage_name}", reply_markup=kb_treatment_menu()
+        )
+
+
+
+async def task_scheduler(app):
+    while True:
+        await asyncio.sleep(60)
+        try:
+            tasks = db.get_pending_tasks()
+            for task in tasks:
+                await run_schedule_task(app, task)
+
+        except Exception as e:
+            logger.error(f"Ошибка планировщика: {e}")
+
+async def run_schedule_task(app, task: dict):
+    chat_id = task['chat_id']
+    system_id = task['system_id']
+    task_id = task['id']
+    str_id = init_user(chat_id)
+
+    db.update_task_status(task_id, "checking")
+
+    month_name = task['month_name']
+    stage_name = task['stage_name']
+    stage = next(
+        (s for s in treatments_db.get(month_name, {}).get('stages', [])
+        if s['name'] == stage_name),
+        None
+    )
+
+    temp_min = stage.get('temp_min') if stage else None
+
+    sensor_check = db.check_sensor_ok(chat_id, temp_min)
+    if not sensor_check['ok']:
+        reasons = ", ".join(sensor_check['reasons'])
+        db.update_task_status(task_id, "skipped")
+        db.log_treatment(
+            chat_id,
+            system_id,
+            task['pump_assignment_id'],
+            month_name,
+            stage_name,
+            "skipped",
+            format_sensor_snapshot(sensor_check['cash'])
+        )
+        await app.bot.send_message(
+            chat_id,
+            f"Обработка пропущена ({stage_name}) \n{reasons}",
+        )
+        return
+    # Три топора!
+    system = db.get_system(system_id)
+    duration = 111 #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    pump_num = task['pump_number']
+    cashe = db.get_sensor_cash(chat_id)
+    snapshot = format_sensor_snapshot(cashe)
+
+    db.update_task_status(task_id, "running")
+    await app.bot.send_message(
+        chat_id,
+        f"Плановая обработка началась! \nЭтап: {stage_name}\nНасос: {pump_num}\nВремя: {duration} сек"
+    )
+
+    publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:0")
+    if str_id in user_states:
+        user_states[str_id]["pump_states"][pump_num] = True
