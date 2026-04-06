@@ -13,7 +13,7 @@ DEFAULTS = {
     "wind_max": 0.0,
     "humidity_max": 0.0,
     'temp_min': 1.0,
-    "bottle_volume_l": 1.0,
+    "bottle_volume_l": 5.0,
     "pump_flow_rate": 10.0,
 }
 
@@ -23,18 +23,18 @@ def init_db():
     cursor.execute("PRAGMA foreign_keys = ON")
 
     cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS users (
-                   chat_id TEXT PRIMARY KEY,
-                   light_day REAL NOT NULL DEFAULT '0.0',
-                   light_night REAL NOT NULL DEFAULT '0.0',
-                   wind_max REAL NOT NULL DEFAULT '0.0',
-                   humidity_max REAL NOT NULL DEFAULT '0.0',
-                   bottle_volume_l REAL NOT NULL DEFAULT '1.0',
-                   temp_min REAL NOT NULL DEFAULT '1.0',
+                    CREATE TABLE IF NOT EXISTS users (
+                    chat_id TEXT PRIMARY KEY,
+                    light_day REAL NOT NULL DEFAULT '0.0',
+                    light_night REAL NOT NULL DEFAULT '0.0',
+                    wind_max REAL NOT NULL DEFAULT '0.0',
+                    humidity_max REAL NOT NULL DEFAULT '0.0',
+                    bottle_volume_l REAL NOT NULL DEFAULT '5.0',
+                    temp_min REAL NOT NULL DEFAULT '1.0',
                     pump_flow_rate REAL NOT NULL DEFAULT '0.0',
-                   created_at TEXT NOT NULL
-                   )
-                   """)
+                    created_at TEXT NOT NULL
+                    )
+                    """)
 
     cursor.execute("""
                         CREATE TABLE IF NOT EXISTS systems (
@@ -434,19 +434,6 @@ def get_sensor_cash(chat_id: str) -> dict:
         result['age_minutes'] = None
 
     return result
-
-#def get_sensor_cash_with_calibration(chat_id: str) -> dict:
-    cash = get_sensor_cash(chat_id)
-    if not cash:
-        return {}
-
-    user = get_or_create_user(chat_id)
-
-    if cash.get('wind') is not None:
-        wind_zero =  user.get('wind_zero', 0.0)
-        cash['wind'] = round(cash['wind'] - wind_zero, 2)
-
-    return cash
 
 def clear_sensor_cash(chat_id: str) -> None:
     conn = sqlite3.connect(DB_FILE)

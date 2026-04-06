@@ -3,12 +3,9 @@ import asyncio
 import json
 import os
 from dotenv import load_dotenv
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
-from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 import paho.mqtt.client as mqtt
-from typer.cli import callback
 import database as db
 
 # Настройки
@@ -84,6 +81,12 @@ def format_sensor_snapshot(cash: dict) -> str:
         "temp": cash.get("temp"),
         "humidity": cash.get("humidity"),
     }, ensure_ascii=False)
+
+def cale_pump_duration_sec(chat_id: str) -> int:
+    user = db.get_or_create_user(chat_id)
+    volume = user.get('bootle_volume_l', db.DEFAULTS['bootle_volume_l'])
+    flow_rate = user.get('pump_flow_rate', db.DEFAULTS['pump_flow_rate'])
+    return max(1, round(volume / flow_rate))
 
 def publish_command(chat_id, sys_id, command):
     topic = f"app/{chat_id}/{sys_id}/control"
@@ -398,12 +401,12 @@ def kb_plan_stage(month_id : int, page: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-async def cmd_start(update: Update):
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user(update.effective_chat.id)
     await update.message.reply_text("Система управления садом.", reply_markup=kb_main_menu())
 
 
-async def text_input_handler(update: Update):
+async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     str_id = str(update.effective_chat.id)
     state = user_states[str_id]
     text = update.message.text.strip()
@@ -434,6 +437,7 @@ async def text_input_handler(update: Update):
                 await update.message.reply_text("Система с таким номером уже существует!", reply_markup=kb_system_menu(str_id, page))
         else:
             await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
+
     elif waiting == "calib:manual":
         pending = state.get("pending_calib", {})
         field = pending.get("field")
@@ -445,9 +449,9 @@ async def text_input_handler(update: Update):
                 db.update_user_settings(str_id, field, vol)
                 state['awaiting_input'] = None
                 state['pending_calib'] = None
-                await update.message.reply_text("Изменения внесены!", reply_markup=kb_calibration_menu)
+                await update.message.reply_text("Изменения внесены!", reply_markup=kb_calibration_menu(str_id))
             except ValueError:
-                await update.message.reply_text("Введите положительное число!", reply_markup=kb_calibration_menu)
+                await update.message.reply_text("Введите положительное число!", reply_markup=kb_calibration_menu(str_id))
         else:
             await update.message.reply_text("ERROR!", reply_markup=kb_main_menu())
 
@@ -458,7 +462,7 @@ async def text_input_handler(update: Update):
                 raise ValueError
             db.update_user_settings(str_id, "bootle_volume_l", val)
             state['awaiting_input'] = None
-            await update.message.reply_text(f"Объём ёмкости сохранён! {val} Л.", reply_markup=kb_calibration_menu)
+            await update.message.reply_text(f"Объём ёмкости сохранён! {val} Л.", reply_markup=kb_calibration_menu(str_id))
 
         except ValueError:
             await update.message.reply_text("ERROR! Введите положительное число (л):")
@@ -475,7 +479,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     str_id = init_user(update.effective_chat.id)
     state = user_states[str_id]
 
-    if data == 'main:menu':
+    if data == 'menu:main':
         await query.edit_message_text("Главное меню:", reply_markup=kb_main_menu())
 
     elif data == "menu:settings":
@@ -514,14 +518,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split(":")
         system_id = int(parts[2])
         page = int(parts[3])
-        db.delete_system(system_id, str)
+        db.delete_system(system_id, str_id)
         await query.edit_message_text("Система удалена", reply_markup=kb_system_menu(str_id, page))
 
     elif data.startswith("sys:empty:"):
         parts = data.split(":")
         slot = int(parts[2])
         page = int(parts[3])
-        await query.edit_message_text(f"Выбран слот №{slot} \n Слот свободен.", reply_markup=kb_chosen_system(slot, page))
+        await query.edit_message_text(f"Выбран слот №{slot} \n Слот свободен.", reply_markup=kb_chosen_empty_system(slot, page))
 
     elif data.startswith("sys:add:"):
         parts = data.split(":")
@@ -579,8 +583,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("treat:cancel_confirm:"):
         parts = data.split(":")
-        task_id = int(parts[3])
-        status = parts[4]
+        task_id = int(parts[2])
+        status = parts[3]
         await query.edit_message_text('Вы уверены, что хотите отменить обработку?', reply_markup=kb_task_cancel_confirm(task_id, status))
 
     elif data.startswith("treat:cancel:"):
@@ -774,9 +778,9 @@ async def run_schedule_task(app, task: dict):
             f"Обработка пропущена ({stage_name}) \n{reasons}",
         )
         return
-    # Три топора!
+
     system = db.get_system(system_id)
-    duration = 111 #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    duration = cale_pump_duration_sec(chat_id)
     pump_num = task['pump_number']
     cashe = db.get_sensor_cash(chat_id)
     snapshot = format_sensor_snapshot(cashe)
@@ -787,6 +791,62 @@ async def run_schedule_task(app, task: dict):
         f"Плановая обработка началась! \nЭтап: {stage_name}\nНасос: {pump_num}\nВремя: {duration} сек"
     )
 
-    publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:0")
+    publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:1")
     if str_id in user_states:
         user_states[str_id]["pump_states"][pump_num] = True
+
+        await asyncio.sleep(duration)
+
+        publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:0")
+
+    if str_id in user_states:
+        user_states[str_id]["pump_states"][pump_num] = False
+
+    db.update_task_status(task_id, "done")
+    db.log_treatment(
+        chat_id,
+        system_id,
+        task['pump_assignment_id'],
+        month_name,
+        stage_name,
+        "success",
+        snapshot
+    )
+
+    await app.bot.send_message(
+        chat_id,
+        text = f"Обработка завершена!\nЭтап: {stage_name}"
+    )
+
+def main():
+    global mqtt_client
+
+    db.init_db()
+
+    mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    mqtt_client.on_connect = on_connect
+    mqtt_client.on_message = on_message
+
+    try:
+        mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        mqtt_client.loop_start()
+
+    except Exception as e:
+        logger.error(f"MQTT ошибка подключения: {e}")
+
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
+
+    async def post_init(application):
+        asyncio.create_task(task_scheduler(application))
+
+    app.post_init = post_init
+
+    logger.info("Бот запущен!")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
