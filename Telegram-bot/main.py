@@ -115,7 +115,7 @@ def on_connect(client, userdata, flags, rc, properties = None):
     logger.info("Connected to MQTT")
     client.subscribe(MQTT_TOPIC_SUBSCRIBE)
 
-def on_message(msg):
+def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode()
         parts = msg.topic.split('/')
@@ -238,7 +238,7 @@ def kb_calibration_menu(str_id: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("<- Назад", callback_data="menu:settings")],
 ])
 
-def kb_chose_pump (system_id:int, purpose: str, page: int) -> InlineKeyboardMarkup:
+def kb_chose_pump (system_id:int, purpose: str, back: str) -> InlineKeyboardMarkup:
     rows = []
     row = []
     for i in range(1, 9):
@@ -249,7 +249,7 @@ def kb_chose_pump (system_id:int, purpose: str, page: int) -> InlineKeyboardMark
 
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("<- Назад", callback_data=f"sys:select:{system_id}:{page}")])
+    rows.append([InlineKeyboardButton("<- Назад", callback_data=f"sys:select:{system_id}:{back}")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -328,9 +328,9 @@ def kb_choose_system_for(str_id: str, purpose:str, page: int = 0) -> InlineKeybo
         rows.append(nav)
 
     back_map = {
-        "pumps" : "menu_debug",
-        "tree_config": "menu_settings",
-        "treatment" : "menu_treatment",
+        "pumps" : "menu:debug",
+        "tree_config": "menu:settings",
+        "treatment" : "menu:treatment",
     }
     rows.append([InlineKeyboardButton("<- Назад", callback_data=back_map.get(purpose, 'menu:main'))])
     return InlineKeyboardMarkup(rows)
@@ -541,7 +541,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(parts[3])
         state['awaiting_input'] = 'sys:rename'
         state['pending_sys'] = {'system_id': system_id, 'page': page}
-        await query.edit_message_text("Введите новое название системы:", reply_markup=kb_system_menu(str_id, page))
+        await query.edit_message_text("Введите новое название системы:", reply_markup=kb_chosen_system(system_id, page))
 
     elif data.startswith("sys:delete_confirm:"):
         parts = data.split(":")
@@ -683,7 +683,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         publish_command(str_id, system['sys_id'], f"NASOS:{p_num}:{action}")
         state["pump_states"][p_num] = not curr
         try:
-            await query.edit_message_text(reply_markup=kb_pumps_menu(str_id, system_id))
+            await query.edit_message_reply_markup(reply_markup=kb_pumps_menu(str_id, system_id))
         except Exception:
             pass
 
@@ -692,14 +692,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not systems:
             await query.edit_message_text("Нет привязанных систем!", reply_markup=kb_debug())
             return
-        for s in systems:
-            publish_command(str_id, s['sys_id'], "GET_ALL")
-            publish_command(str_id, s['sys_id'], "GET_VETER")
-            publish_command(str_id, s['sys_id'], "GET_POT")
+        s = systems[0]
+        publish_command(str_id, s['sys_id'], "GET_ALL")
+        publish_command(str_id, s['sys_id'], "GET_VETER")
+        publish_command(str_id, s['sys_id'], "GET_POT")
 
         await query.edit_message_text("Идёт запрос данных...", reply_markup=kb_debug())
         cash = db.get_sensor_cash(str_id)
-        user = db.get_or_create_user(str_id)
         age = cash.get("age_minutes", "?")
         await query.edit_message_text(
             "Показания датчиков\n"
@@ -712,7 +711,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb_sensors_display()
         )
 
-    elif data.startswith("menu:tree_config"):
+    elif data.startswith("menu:tree_config:"):
         page = int(data.split(":")[2])
         systems = db.get_user_systems(str_id)
         if not systems:
