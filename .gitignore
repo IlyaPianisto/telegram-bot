@@ -1,4 +1,5 @@
 .env
 /.venv/
-/__pycache__/
+telegram-bot/__pycache__/
+Telegram-bot/__pycache__/
 /.idea/
