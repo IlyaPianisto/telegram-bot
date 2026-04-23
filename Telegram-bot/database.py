@@ -299,6 +299,7 @@ def assign_pump (system_id: int, pump_number: int, tree_type_id: int) -> dict | 
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+
     try:
         now = datetime.datetime.now().isoformat()
         cursor.execute("""
@@ -383,13 +384,34 @@ def remove_pump_assignment(system_id: int, pump_number: int) -> bool:
     conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
 
-    cursor.execute("""
-                   DELETE FROM pump_assignments WHERE system_id = ? and pump_number = ?""", (system_id, pump_number))
+    try:
+        cursor.execute("""
+        UPDATE scheduled_tasks SET status = 'cancelled' 
+        WHERE pump_assignment_id IN (
+        SELECT id FROM pump_assignments WHERE system_id = ? AND pump_number = ?)
+        AND status = 'pending'""", (system_id, pump_number))
 
-    deleted = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return deleted
+        cursor.execute("""
+        DELETE FROM treatment_log WHERE pump_assignment_id IN (
+        SELECT id FROM pump_assignments WHERE system_id = ? AND pump_number = ?)""", (system_id, pump_number))
+
+        cursor.execute("""
+        DELETE FROM scheduled_tasks WHERE pump_assignment_id IN (
+        SELECT id FROM pump_assignments WHERE system_id = ? AND pump_number = ?)
+        """, (system_id, pump_number))
+
+        cursor.execute("""
+                       DELETE FROM pump_assignments WHERE system_id = ? and pump_number = ?""", (system_id, pump_number))
+
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return deleted
+
+    except Exception as e:
+        conn.close()
+        print(f"Ошибка удаления насоса! {e}")
+        return False
 
 def update_sensor_cash(chat_id: str, field: str, value: float) -> None:
     ALLOWED_FIELDS = {"wind", "light", "temp", "humidity"}

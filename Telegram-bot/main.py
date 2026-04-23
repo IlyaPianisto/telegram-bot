@@ -550,7 +550,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     processed_callbacks.add(query.id)
 
-    if len(processed_callbacks) > 5:
+    if len(processed_callbacks) > 100:
         processed_callbacks.clear()
 
     data = query.data
@@ -866,17 +866,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "22:00"
             )
 
-            state["pending_treatment"] = None
-            label_map = {"pending": "Отложенные", "running": "В процессе"}
-            trees_used = ", ".join(set(p["tree_name"] for p in target_pumps))
-            text = (
-                "Обработка запланирована на 22:00\n\n"
-                f"Система: {system['name']}\n"
-                f"Этап: {label_map[stage_name]}\n"
-                f"Деревья: {trees_used}\n"
-                f"Насосы: {len(target_pumps)}\n"
-            )
-            await delete_photo_and_show(query, state, str_id, text, kb_treatment_menu())
+        state["pending_treatment"] = None
+        label_map = {"pending": "Отложенные", "running": "В процессе"}
+        trees_used = ", ".join(set(p["tree_name"] for p in target_pumps))
+        text = (
+            "Обработка запланирована на 22:00\n\n"
+            f"Система: {system['name']}\n"
+            f"Этап: {stage_name}\n"
+            f"Деревья: {trees_used}\n"
+            f"Насосы: {len(target_pumps)}\n"
+        )
+        await delete_photo_and_show(query, state, str_id, text, kb_treatment_menu())
 
 
     elif data == "menu:treatment":
@@ -908,7 +908,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Этап: {task['stage_name']}\n"
             f"Система: {task['system_name']}\n"
             f"Насос: {task['pump_number']}\n"
-            f"Время: {task['scheduled_time']}"
+            f"Время: {task['scheduled_time']}\n"
             f"Статус: {label_map[status]}",
             reply_markup=kb_task_selected(task_id, status)
         )
