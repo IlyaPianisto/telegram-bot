@@ -2,12 +2,12 @@ import logging
 import asyncio
 import json
 import os
-import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters, CallbackContext
 import paho.mqtt.client as mqtt
 import database as db
+from datetime import datetime
 
 # Настройки
 load_dotenv()
@@ -31,13 +31,13 @@ processed_callbacks: set = set()
 mqtt_client: mqtt.Client | None = None
 
 async def delete_photo_and_show(query, state, str_id, text, kb):
-    photo_msg_id = state.get('photo_message_id')
+    photo_msg_id = state.get("photo_message_id")
     if photo_msg_id:
         try:
             await query.message.chat.delete_message(photo_msg_id)
         except Exception:
             pass
-        state['photo_message_id'] = None
+        state["photo_message_id"] = None
         await query.message.reply_text(text, reply_markup=kb)
     else:
         try:
@@ -45,7 +45,7 @@ async def delete_photo_and_show(query, state, str_id, text, kb):
         except Exception:
             await query.message.reply_text(text, reply_markup=kb)
 
-async def cmd_get_file_id(update: Update, context: CallbackContext):
+async def cmd_get_file_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.photo:
         file_id = update.message.photo[-1].file_id
         await update.message.reply_text(file_id)
@@ -102,7 +102,7 @@ def init_user (chat_id) -> str:
             'calibrating' : None,
             'awaiting_input' : None,
             'pending_treatment' : None,
-            'photo_message_id' : None,
+            'photo_message_id': None,
         }
 
     return str_id
@@ -129,7 +129,7 @@ def cale_pump_duration_sec(chat_id: str) -> int:
     return max(1, round(volume / flow_rate))
 
 def publish_command(chat_id, sys_id, command):
-    topic = f"Acpp-garden-Complexx/{chat_id}/{sys_id}/control"
+    topic = f"app/{chat_id}/{sys_id}/control"
     if mqtt_client:
         mqtt_client.publish(topic, command)
         logger.info(f"MQTT OUT {topic}: {command}")
@@ -265,24 +265,37 @@ def kb_chose_pump (system_id:int, purpose: str, back: str) -> InlineKeyboardMark
     rows = []
     row = []
     for i in range(1, 9):
-        rows.append([InlineKeyboardButton(f"Насос {i}", callback_data=f"{purpose}:pump:{system_id}:{i}")]) ##
+        assignment = db.get_pump_assignment(system_id, i)
+        if assignment:
+            label = f"Насос {i} ({assignment['tree_name']})"
+        else:
+            label = f"Насос {i} (не привязан)"
+        rows.append([InlineKeyboardButton(label, callback_data=f"{purpose}:pump:{system_id}:{i}")])
+
         if len(row) == 2:
             rows.append(row)
             row = []
 
     if row:
         rows.append(row)
-    rows.append([InlineKeyboardButton("<- Назад", callback_data=f"sys:select:{system_id}:{back}")])
+    rows.append([InlineKeyboardButton("<- Назад", callback_data=back)])
 
     return InlineKeyboardMarkup(rows)
 
 def kb_calib_value(field: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Считать текущее", callback_data=f"calib:read_sensor:{field}")],
-        [InlineKeyboardButton("Ввести вручную", callback_data=f"calib:manual:{field}")],
-        [InlineKeyboardButton("Вернуть к стандартному", callback_data=f"calib:default:{field}")],
-        [InlineKeyboardButton("<- Назад", callback_data="menu:calibration")],
-    ])
+    if field == "pump_flow_rate":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Ввести вручную", callback_data=f"calib:manual:{field}")],
+            [InlineKeyboardButton("Вернуть к стандартному", callback_data=f"calib:default:{field}")],
+            [InlineKeyboardButton("<- Назад", callback_data="menu:calibration")],
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Считать текущее", callback_data=f"calib:read_sensor:{field}")],
+            [InlineKeyboardButton("Ввести вручную", callback_data=f"calib:manual:{field}")],
+            [InlineKeyboardButton("Вернуть к стандартному", callback_data=f"calib:default:{field}")],
+            [InlineKeyboardButton("<- Назад", callback_data="menu:calibration")],
+        ])
 
 def kb_set_calibrate_value():
     return InlineKeyboardMarkup([
@@ -334,7 +347,7 @@ def kb_choose_system_for(str_id: str, purpose:str, page: int = 0) -> InlineKeybo
     start = page * SYSTEMS_PER_PAGE
     end = start + SYSTEMS_PER_PAGE
     page_systems = systems[start:end]
-
+    logger.info("")
     rows = []
     for s in page_systems:
         rows.append([InlineKeyboardButton(
@@ -371,7 +384,11 @@ def kb_choose_tree_type(system_id: int, pump_num: int,page: int) -> InlineKeyboa
     page_trees = tree_types[start:end]
 
     rows = []
-
+    if page == 0:
+        rows.append([InlineKeyboardButton(
+            "Не выбрано",
+            callback_data=f"tree_config:unassign:{system_id}:{pump_num}"
+        )])
     for t in page_trees:
         rows.append([InlineKeyboardButton(
             t['name'], callback_data=f"tree_config:assign:{system_id}:{pump_num}:{t['id']}"
@@ -391,7 +408,7 @@ def kb_choose_tree_type(system_id: int, pump_num: int,page: int) -> InlineKeyboa
     return InlineKeyboardMarkup(rows)
 
 def kb_treatment_menu () -> InlineKeyboardMarkup:
-    current_month_id = datetime.datetime.now().month - 1
+    current_month_id = datetime.now().month - 1
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Запланировать", callback_data=f"treat:plan:{current_month_id}")],
         [InlineKeyboardButton("Отложенные", callback_data="treat:list:pending")],
@@ -403,7 +420,7 @@ def kb_task_list(tasks: list, status: str) -> InlineKeyboardMarkup:
     rows = []
 
     for task in tasks:
-        label = f"{task['stage_name']} - {task['tree_name']} ({task['scheduled_time']})" ### peredelat
+        label = f"{task['stage_name']} - {task['tree_name']} ({task['scheduled_time']})"
         rows.append([InlineKeyboardButton(label, callback_data=f"treat:task:{task['id']}:{status}")])
     rows.append([InlineKeyboardButton("<- Назад", callback_data="menu:treatment")])
     return InlineKeyboardMarkup(rows)
@@ -627,7 +644,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = db.get_or_create_user(str_id)
         label, hint = CALIB_LABELS.get(field, (field, ""))
         state['pending_calib'] = {'field': field}
-        await query.edit_message_text(f"{label}\nТекущее: {user[field]}\n{hint}",
+        await query.edit_message_text(f"{label}\nТекущее: {user[field]}{hint}",
                                       reply_markup=kb_calib_value(field))
 
     elif data.startswith("calib:manual"):
@@ -738,7 +755,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Обновлено {age} минут назад\n\n"
             f"Температура: {cash.get("temp", "--")} ℃\n"
             f"Влажность: {cash.get("humidity", "--")}\n"
-            f"Ветер: {cash.get("wind", "--"):.6F}\n"
+            f"Ветер: {cash.get("wind", "--"):.6f}\n"
             f"Свет: {cash.get("light", "--")}",
 
             reply_markup=kb_sensors_display()
@@ -783,6 +800,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=kb_chose_pump(system_id, "tree_config", "menu:tree_config:0")
             )
 
+    elif data.startswith("tree_config:unassign:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        pump_num = int(parts[3])
+        db.remove_pump_assignment(system_id, pump_num)
+        await query.edit_message_text(
+            f"Насос {pump_num} - привязка снята",
+            reply_markup=kb_chose_pump(system_id, "tree_config", "menu:tree_config:0")
+        )
+
     elif data.startswith("tree_config:back_pumps:"):
         parts = data.split(":")
         system_id = int(parts[2])
@@ -801,52 +828,56 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb_choose_tree_type(system_id, pump_num, page)
         )
 
-    elif data.startswith("treatment:sys"):
+    elif data.startswith("treatment:sys:"):
         parts = data.split(":")
         system_id = int(parts[2])
         system = db.get_system(system_id)
-        pending = state.get("pending_treatments", {})
+        pending = state.get("pending_treatment", {})
         month_name = pending.get("month_name")
         stage_id = pending.get("stage_id", 0)
-
+        logger.info(f"month_name={month_name}, stage_id={stage_id}")
         if not month_name:
             await query.edit_message_text(
-                "ERROR! Начните выбор заново!",
-                reply_markup=kb_treatment_menu()
+                "Ошибка! Начните выбор заново",
+                reply_markup = kb_treatment_menu()
             )
+            return
+        stage = treatments_db.get(month_name, {}).get("stages", [])[stage_id]
+        stage_name = stage["name"]
+        stage_trees = stage.get("trees", [])
 
-        stage = treatments_db.get(month_name, {}).get("stages", [])(stage_id)
-        stage_name = stage['name']
-        stage_trees = stage.get('trees', [])
-
-        all_pumps = db.get_all_pumps(system_id)
-        target_pumps = [p for p in all_pumps if p['tree_name'] in stage_trees]
+        all_pumps = db.get_system_pumps(system_id)
+        target_pumps = [p for p in all_pumps if p["tree_name"] in stage_trees]
 
         if not target_pumps:
-            await query.edit_message_text("У вас нет подходящих деревьев для этой обработки", reply_markup=kb_choose_system_for(str_id, "treatment", 0))
+            await query.edit_message_text(
+                "У вас нет подходящих деревьев для этой обработки",
+                reply_markup=kb_choose_system_for(str_id, "treatment", 0)
+            )
             return
 
         for pump in target_pumps:
             db.add_schedule_task(
                 str_id,
                 system_id,
-                pump['id'],
+                pump["id"],
                 month_name,
                 stage_name,
                 "22:00"
             )
 
-            state["pending_treatments"] = None
+            state["pending_treatment"] = None
             label_map = {"pending": "Отложенные", "running": "В процессе"}
             trees_used = ", ".join(set(p["tree_name"] for p in target_pumps))
             text = (
-                "Обработка запланирована на 22:00\n",
-                f"Система: {system['name']}\n",
-                f"Этап: {label_map[stage_name]}\n",
-                f"Деревья: {trees_used}\n",
+                "Обработка запланирована на 22:00\n\n"
+                f"Система: {system['name']}\n"
+                f"Этап: {label_map[stage_name]}\n"
+                f"Деревья: {trees_used}\n"
                 f"Насосы: {len(target_pumps)}\n"
             )
             await delete_photo_and_show(query, state, str_id, text, kb_treatment_menu())
+
 
     elif data == "menu:treatment":
         await query.edit_message_text("Обработка деревьев", reply_markup=kb_treatment_menu())
@@ -877,7 +908,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Этап: {task['stage_name']}\n"
             f"Система: {task['system_name']}\n"
             f"Насос: {task['pump_number']}\n"
-            f"Время: {task['scheduled_time']}\n"
+            f"Время: {task['scheduled_time']}"
             f"Статус: {label_map[status]}",
             reply_markup=kb_task_selected(task_id, status)
         )
@@ -909,7 +940,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Доступные обработки: {len(stages)}"
         )
         kb = kb_plan_stage(month_id, 0)
-
         await delete_photo_and_show(query, state, str_id, text, kb)
 
     elif data.startswith("treat:plan_page:"):
@@ -923,11 +953,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stages = treatments_db.get(month_name,{}).get('stages', [])
             await query.edit_message_caption(f"Месяц: {month_name}\nДоступные обработки: {len(stages)}", reply_markup=kb_plan_stage(month_id, page))
 
-    elif data.startswith("treat:stage:"): # его если чё менять потом.
+    elif data.startswith("treat:stage:"):
         parts = data.split(":")
         month_id = int(parts[2])
         stage_id = int(parts[3])
         month_name = MONTHS_LIST[month_id]
+
         stages = treatments_db.get(month_name,{}).get('stages', [])
         if stage_id >= len(stages):
             await query.edit_message_text("Обработка не найдена.", reply_markup=kb_treatment_menu())
@@ -939,6 +970,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"{stage['name']}\n"
         if stage.get("instruction"):
             text += f"{stage['instruction']}"
+
 
         state['pending_treatment'] = {
             "month_name": month_name,
@@ -953,7 +985,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if photo_url:
             sent = await query.message.reply_photo(
-                photo=photo_url,
+                photo = photo_url,
                 caption=text,
                 reply_markup=InlineKeyboardMarkup(rows),
             )
@@ -978,12 +1010,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Деревья: {trees_text}\n\n"
             "Приготовьте раствор и залейте в ёмкости. Затем выберите системы для обработки"
         )
-
         kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Выбрать систему", callback_data="treat:choose_system")],
-                [InlineKeyboardButton("<- Назад", callback_data=f"treat:stage:{month_id}:{stage_id}")], ])
-
+                [InlineKeyboardButton("<- Назад", callback_data=f"treat:stage:{month_id}:{stage_id}")],
+            ])
         await delete_photo_and_show(query, state, str_id, text, kb)
+
 
     elif data == "treat:choose_system":
         systems = db.get_user_systems(str_id)
@@ -993,7 +1025,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text = "Выберите систему:"
             kb = kb_choose_system_for(str_id, "treatment", 0)
-
         await delete_photo_and_show(query, state, str_id, text, kb)
 
     elif data.startswith("menu_treatment"):
@@ -1018,39 +1049,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("<- Назад", callback_data=f"treat:choose_system")])
         await query.edit_message_text(f"Система \"{system['name']}\"\nВыберите насос:", reply_markup=InlineKeyboardMarkup(rows))
 
-    elif data.startswith("treat:pump"):
-        parts = data.split(":")
-        system_id = int(parts[2])
-        pump_assignment_id = int(parts[3])
-        pending = state.get('pending_treatment', {})
-        month_name = pending.get('month_name')
-        stage_id = pending.get('stage_id', 0)
-
-        if not month_name:
-            await query.edit_message_text("ERROR! Начините выбор заново.", reply_markup=kb_treatment_menu())
-            return
-
-        stage = treatments_db.get(month_name,{}).get('stages', [])[stage_id]
-        stage_name = stage['name']
-        pumps = db.get_system_pumps(system_id)
-        pump = next((p for p in pumps if p['id'] == pump_assignment_id), None)
-
-        db.add_schedule_task(
-            str_id,
-            system_id,
-            pump_assignment_id,
-            month_name,
-            stage_name,
-            "22:00"
-        )
-
-        state['pending_treatment'] = None
-        tree_name = pump['tree_name'] if pump else '-'
-        pump_num = pump['pump_number'] if pump else '-'
-
-        await query.edit_message_text(
-            f"Обработка запланирована на 22:00\nНасос {pump_num} - {tree_name}\nЭтап: {stage_name}", reply_markup=kb_treatment_menu()
-        )
+    # elif data.startswith("treat:pump"):
+    #     parts = data.split(":")
+    #     system_id = int(parts[2])
+    #     pump_assignment_id = int(parts[3])
+    #     pending = state.get('pending_treatment', {})
+    #     month_name = pending.get('month_name')
+    #     stage_id = pending.get('stage_id', 0)
+    #
+    #     if not month_name:
+    #         await query.edit_message_text("ERROR! Начините выбор заново.", reply_markup=kb_treatment_menu())
+    #         return
+    #
+    #     stage = treatments_db.get(month_name,{}).get('stages', [])[stage_id]
+    #     stage_name = stage['name']
+    #     pumps = db.get_system_pumps(system_id)
+    #     pump = next((p for p in pumps if p['id'] == pump_assignment_id), None)
+    #
+    #     db.add_schedule_task(
+    #         str_id,
+    #         system_id,
+    #         pump_assignment_id,
+    #         month_name,
+    #         stage_name,
+    #         "22:00"
+    #     )
+    #
+    #     state['pending_treatment'] = None
+    #     tree_name = pump['tree_name'] if pump else '-'
+    #     pump_num = pump['pump_number'] if pump else '-'
+    #
+    #     await query.edit_message_text(
+    #         f"Обработка запланирована на 22:00\nНасос {pump_num} - {tree_name}\nЭтап: {stage_name}", reply_markup=kb_treatment_menu()
+    #     )
 
 
 
