@@ -14,7 +14,8 @@ load_dotenv()
 TOKEN = os.getenv("TOKEN")
 MQTT_BROKER = os.getenv("MQTT_BROKER")
 MQTT_PORT = int(os.getenv("MQTT_PORT"))
-MQTT_TOPIC_SUBSCRIBE = os.getenv("MQTT_TOPIC_SUBSCRIBE")
+MQTT_TOPIC_SENSORS = os.getenv("MQTT_TOPIC_SENSORS")
+MQTT_TOPIC_NASOS = os.getenv("MQTT_TOPIC_NASOS")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 TREATMENTS_FILE = "treatments.json"
@@ -130,14 +131,14 @@ def cale_pump_duration_sec(chat_id: str) -> int:
     return max(1, round(volume * flow_rate))
 
 def publish_command(chat_id, sys_id, command):
-    topic = f"Acpp-garden-Complexx/{chat_id}/{sys_id}/control"
+    topic = MQTT_TOPIC_NASOS
     if mqtt_client:
         mqtt_client.publish(topic, command)
         logger.info(f"MQTT OUT {topic}: {command}")
 
 def on_connect(client, userdata, flags, rc, properties = None):
     logger.info("Connected to MQTT")
-    client.subscribe(MQTT_TOPIC_SUBSCRIBE)
+    client.subscribe(MQTT_TOPIC_SENSORS)
 
 def on_message(client, userdata, msg):
     try:
@@ -447,7 +448,7 @@ def kb_plan_stage(month_id : int, page: int) -> InlineKeyboardMarkup:
 
     rows = []
     for i, stage in enumerate(page_stages):
-        rows.append([InlineKeyboardButton(stage['name'], callback_data=f"treat:stage:{month_id}:{start+i}")]) #peredelat
+        rows.append([InlineKeyboardButton(stage['name'][3:len(stage['name'])-4], callback_data=f"treat:stage:{month_id}:{start+i}")]) #peredelat
 
     nav = []
 
@@ -988,6 +989,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sent = await query.message.reply_photo(
                 photo = photo_url,
                 caption=text,
+                parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(rows),
             )
             state['photo_message_id'] = sent.message_id
@@ -1101,8 +1103,30 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         else:
-            db.add_tree_type(tree_name)
-            await update.message.reply_text(f"Дерево \"{tree_name}\" добавлено в базу!")
+            result = db.add_tree_type(tree_name)
+            if result != None:
+                await update.message.reply_text(f"Дерево \"{tree_name}\" добавлено в базу!")
+            else:
+                await update.message.reply_text(f"Возникла ошибка при добавлении!")
+
+    elif command == "delete_tree_type":
+        if len(parts) < 2:
+            await update.message.reply_text("Используй: /delete_tree_type <Название дерева>")
+            return
+
+        tree_name = parts[1]
+        tree_types = db.get_tree_types()
+
+        if any(tree['name'] == tree_name for tree in tree_types):
+            result = db.delete_tree_type(tree_name)
+            if result:
+                await update.message.reply_text(f"Дерево \"{tree_name}\" удалено из базы!")
+            else:
+                await update.message.reply_text(f"Возникла ошибка при удалении! ")
+
+        else:
+            await update.message.reply_text("Такого дерева нет в бд!")
+            return
 
 
 async def task_scheduler(app):

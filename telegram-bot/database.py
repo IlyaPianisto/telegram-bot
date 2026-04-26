@@ -206,6 +206,23 @@ def add_tree_type(name: str) -> dict | None:
         print(f"ERROR: дерево {name} уже есть, уже существует!")
         return None
 
+def delete_tree_type(tree_type_name: str) -> bool:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("DELETE FROM tree_types WHERE name = ?", (tree_type_name,))
+        conn.commit()
+        conn.close()
+        return True
+
+    except Exception as e:
+        conn.close()
+        print(e)
+        return False
+
 def add_system(chat_id: str, sys_id: int, name: str = "Система") -> dict | None:
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
