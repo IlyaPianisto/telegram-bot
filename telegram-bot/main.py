@@ -15,7 +15,7 @@ TOKEN = os.getenv("TOKEN")
 MQTT_BROKER = os.getenv("MQTT_BROKER")
 MQTT_PORT = int(os.getenv("MQTT_PORT"))
 MQTT_TOPIC_SENSORS = os.getenv("MQTT_TOPIC_SENSORS")
-MQTT_TOPIC_NASOS = os.getenv("MQTT_TOPIC_NASOS")
+MQTT_TOPIC = os.getenv("MQTT_TOPIC")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 TREATMENTS_FILE = "treatments.json"
@@ -131,7 +131,7 @@ def cale_pump_duration_sec(chat_id: str) -> int:
     return max(1, round(volume * flow_rate))
 
 def publish_command(chat_id, sys_id, command):
-    topic = MQTT_TOPIC_NASOS
+    topic = f"{MQTT_TOPIC}/{chat_id}/{sys_id}/control"
     if mqtt_client:
         mqtt_client.publish(topic, command)
         logger.info(f"MQTT OUT {topic}: {command}")
@@ -634,7 +634,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         page = int(parts[3])
         state['awaiting_input'] = 'sys:add_name'
         state['pending_sys'] = {'slot': slot, 'page': page}
-        await query.edit_message_text("Напишите название для вашей системы:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("<- Назад", callback_data="sys:add:")]]))
+        await query.edit_message_text("Напишите название для вашей системы:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("<- Назад", callback_data=f"sys:add:{slot}:{page}"),]]))
 
     elif data == "calib:bottle":
         user = db.get_or_create_user(str_id)
@@ -873,8 +873,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         trees_used = ", ".join(set(p["tree_name"] for p in target_pumps))
         text = (
             "Обработка запланирована на 13:10\n\n"
-            f"Система: {system['name']}\n"
-            f"Обработка: {stage_name}\n"
+            f"Система: {stage['name'][3:len(stage['name'])-4]}\n"
+            f"Обработка: {stage_name[3:len(stage_name)-4]}\n"
             f"Деревья: {trees_used}\n"
             f"Насосы: {len(target_pumps)}\n"
         )
@@ -907,7 +907,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await query.edit_message_text(
             f"{task['tree_name']}\n"
-            f"Обработка: {task['stage_name']}\n"
+            f"Обработка: {task['stage_name'][3:len(task['stage_name'])-4]}\n"
             f"Система: {task['system_name']}\n"
             f"Насос: {task['pump_number']}\n"
             f"Время: {task['scheduled_time']}\n"
@@ -1009,9 +1009,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"Подтверждение \n\n"
             f"Месяц: {month_name}\n"
-            f"Обработка: {stage['name']}\n"
+            f"Обработка: {stage['name'][3:len(stage['name'])-4]}\n"
             f"Деревья: {trees_text}\n\n"
-            "Приготовьте раствор и залейте в ёмкости. Затем выберите системы для обработки"
+            "Приготовьте растворы и залейте в ёмкости. Затем выберите системы для обработки"
         )
         kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Выбрать систему", callback_data="treat:choose_system")],
@@ -1052,39 +1052,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("<- Назад", callback_data=f"treat:choose_system")])
         await query.edit_message_text(f"Система \"{system['name']}\"\nВыберите насос:", reply_markup=InlineKeyboardMarkup(rows))
 
-    # elif data.startswith("treat:pump"):
-    #     parts = data.split(":")
-    #     system_id = int(parts[2])
-    #     pump_assignment_id = int(parts[3])
-    #     pending = state.get('pending_treatment', {})
-    #     month_name = pending.get('month_name')
-    #     stage_id = pending.get('stage_id', 0)
-    #
-    #     if not month_name:
-    #         await query.edit_message_text("ERROR! Начините выбор заново.", reply_markup=kb_treatment_menu())
-    #         return
-    #
-    #     stage = treatments_db.get(month_name,{}).get('stages', [])[stage_id]
-    #     stage_name = stage['name']
-    #     pumps = db.get_system_pumps(system_id)
-    #     pump = next((p for p in pumps if p['id'] == pump_assignment_id), None)
-    #
-    #     db.add_schedule_task(
-    #         str_id,
-    #         system_id,
-    #         pump_assignment_id,
-    #         month_name,
-    #         stage_name,
-    #         "13:10"
-    #     )
-    #
-    #     state['pending_treatment'] = None
-    #     tree_name = pump['tree_name'] if pump else '-'
-    #     pump_num = pump['pump_number'] if pump else '-'
-    #
-    #     await query.edit_message_text(
-    #         f"Обработка запланирована на 13:10\nНасос {pump_num} - {tree_name}\nОбработка: {stage_name}", reply_markup=kb_treatment_menu()
-    #     )
 
 async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = update.message.text.split()
@@ -1151,7 +1118,7 @@ async def run_schedule_task(app, task: dict):
     db.update_task_status(task_id, "checking")
 
     month_name = task['month_name']
-    stage_name = task['stage_name']
+    stage_name = task['stage_name'][3:len(task['stage_name'])-4]
     stage = next(
         (s for s in treatments_db.get(month_name, {}).get('stages', [])
         if s['name'] == stage_name),
