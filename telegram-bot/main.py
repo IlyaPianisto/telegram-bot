@@ -755,10 +755,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "Показания датчиков\n"
             f"Обновлено {age} минут назад\n\n"
-            f"Температура: {cash.get("temp", "--")} ℃\n"
-            f"Влажность: {cash.get("humidity", "--")}\n"
-            f"Ветер: {cash.get("wind", "--"):.6f}\n"
-            f"Свет: {cash.get("light", "--")}",
+            f"Температура: {cash.get('temp', '--')} ℃\n"
+            f"Влажность: {cash.get('humidity', '--')}\n"
+            f"Ветер: {cash.get('wind', '--'):.6f}\n"
+            f"Свет: {cash.get('light', '--')}",
 
             reply_markup=kb_sensors_display()
         )
