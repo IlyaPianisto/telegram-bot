@@ -865,14 +865,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pump["id"],
                 month_name,
                 stage_name,
-                "13:10"
+                "8:00"
             )
 
         state["pending_treatment"] = None
         label_map = {"pending": "Отложенные", "running": "В процессе"}
         trees_used = ", ".join(set(p["tree_name"] for p in target_pumps))
         text = (
-            "Обработка запланирована на 13:10\n\n"
+            "Обработка запланирована на 8:00\n\n"
             f"Система: {stage['name'][3:len(stage['name'])-4]}\n"
             f"Обработка: {stage_name[3:len(stage_name)-4]}\n"
             f"Деревья: {trees_used}\n"
