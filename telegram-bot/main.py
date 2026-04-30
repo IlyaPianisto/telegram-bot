@@ -1147,7 +1147,7 @@ async def run_schedule_task(app, task: dict):
         )
         await app.bot.send_message(
             chat_id,
-            f"Обработка пропущена ({stage_name}) \n{reasons}",
+            f"Обработка пропущена ({stage_name[3:len(stage_name)-4]}) \n{reasons}",
         )
         return
 
@@ -1160,7 +1160,7 @@ async def run_schedule_task(app, task: dict):
     db.update_task_status(task_id, "running")
     await app.bot.send_message(
         chat_id,
-        f"Плановая обработка началась! \nОбработка: {stage_name}\nНасос: {pump_num}\nВремя: {duration} сек"
+        f"Плановая обработка началась! \nОбработка: {stage_name[3:len(stage_name)-4]}\nНасос: {pump_num}\nВремя: {duration} сек"
     )
 
     publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:ON")
@@ -1187,7 +1187,7 @@ async def run_schedule_task(app, task: dict):
 
     await app.bot.send_message(
         chat_id,
-        text = f"Обработка завершена!\nОбработка: {stage_name}"
+        text = f"Обработка завершена!\nОбработка: {stage_name[3:len(stage_name)-4]}"
     )
 
 def main():
